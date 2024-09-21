@@ -29,7 +29,7 @@
   (reify
 
     protos/AbstractSet
-    (contains? [s x]
+    (contains? [_ x]
       (and (protos/contains? a x) (protos/contains? b x)))
 
     (max-cardinality [_]
@@ -48,10 +48,10 @@
   (reify
 
     protos/AbstractSet
-    (contains? [s x]
+    (contains? [_ x]
       (and (protos/contains? a x) (not (protos/contains? b x))))
 
-    (max-cardinality [s]
+    (max-cardinality [_]
       (protos/max-cardinality a))
 
     (min-cardinality [_]
@@ -66,7 +66,7 @@
   (reify
 
     protos/AbstractSet
-    (contains? [s x]
+    (contains? [_ x]
       (or (protos/contains? a x) (protos/contains? b x)))
 
     (max-cardinality [_]
