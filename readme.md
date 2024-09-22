@@ -1,1 +1,1 @@
-Abstract sets, relations, and algorithms that avoid ever realizing a concrete collection. Useful for composing set operations or relational algebra in a lazy and incremental manner to minimize data transfer when protocols are implemented outside the heap.
+Abstract sets, relations, and algorithms that avoid ever realizing a concrete collection. Useful for composing set operations or relational algebra in a lazy and incremental manner to minimize data transfer when protocols are implemented against data that lives outside of memory.

@@ -2,7 +2,7 @@
   (:require [io.github.rutledgepaulv.abstract-sets.protocols :as protos])
   (:import (clojure.lang IReduceInit)
            (java.util List Set))
-  (:refer-clojure :exclude [conj disj empty]))
+  (:refer-clojure :exclude [conj disj empty empty?]))
 
 
 (extend-protocol protos/AbstractSet
@@ -102,6 +102,12 @@
                      (eduction (remove (partial protos/contains? a)) (protos/reducible b))]))))
 
 
+(defn empty?
+  "Is the abstract set empty?"
+  [s]
+  (and (zero? (protos/min-cardinality s))
+       (reduce (constantly (reduced false)) true (protos/reducible s))))
+
 (defn intersects?
   "Do a and b share at least one element?"
   [a b]
@@ -140,7 +146,9 @@
             init
             (protos/reducible a)))))))
 
-(defn empty []
+(defn empty
+  "Create an empty abstract set."
+  []
   (reify protos/AbstractSet
     (contains? [_ _] false)
     (max-cardinality [_] 0)
@@ -158,6 +166,7 @@
   (subset? s2 s1))
 
 (defn conj
+  "Conjoins one or more values to an abstract set."
   ([] (empty))
   ([s & xs]
    (let [elements (set xs)]
@@ -172,6 +181,7 @@
          (eduction cat [elements (protos/reducible s)]))))))
 
 (defn disj
+  "Disjoins one or more values from an abstract set."
   ([] (empty))
   ([s & xs]
    (let [elements (set xs)]
@@ -186,10 +196,14 @@
        (reducible [_]
          (eduction (remove elements) (protos/reducible s)))))))
 
-(defn cardinality [s]
+(defn cardinality
+  "Returns the actual cardinality of the set by counting the elements."
+  [s]
   (let [min (protos/min-cardinality s)
         max (protos/max-cardinality s)]
     (if (= min max) max (reduce (fn [i _] (inc i)) 0 (protos/reducible s)))))
 
-(defn realize [s]
+(defn realize
+  "Creates a concrete set from an abstract set. Primarily for testing."
+  [s]
   (into #{} (protos/reducible s)))
