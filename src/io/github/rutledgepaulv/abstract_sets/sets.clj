@@ -1,8 +1,8 @@
 (ns io.github.rutledgepaulv.abstract-sets.sets
+  (:refer-clojure :exclude [conj disj empty empty?])
   (:require [io.github.rutledgepaulv.abstract-sets.protocols :as protos])
   (:import (clojure.lang IReduceInit)
-           (java.util List Set))
-  (:refer-clojure :exclude [conj disj empty empty?]))
+ (java.util List Set)))
 
 
 (extend-protocol protos/AbstractSet
@@ -77,7 +77,10 @@
       (protos/max-cardinality a))
 
     (min-cardinality [_]
-      0)
+      (if (clojure.core/empty? more)
+        (protos/min-cardinality a)
+        (let [min-a (protos/min-cardinality a)]
+          (max 0 (- min-a (reduce + 0 (map protos/max-cardinality more)))))))
 
     (reducible [_]
       (eduction
@@ -89,7 +92,7 @@
           more)))))
 
 (defn union
-  "Given two abstract sets, returns a new abstract set representing the union."
+  "Given zero or more abstract sets, returns a new abstract set representing the union."
   [& sets]
   (reify
 
@@ -156,7 +159,8 @@
 
     protos/AbstractSet
     (contains? [_ x]
-      (and (vector? x)
+      (and (sequential? x)
+           (= 2 (count x))
            (let [[xa xb] x]
              (and (protos/contains? a xa)
                   (protos/contains? b xb)))))

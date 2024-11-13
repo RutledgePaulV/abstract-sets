@@ -20,34 +20,44 @@
 (defn project
   "Given a relation and an abstract set of columns, return a new relation containing only those columns which intersected."
   [relation columns]
-  (reify protos/AbstractRelation
-    (cols [this]
-      (sets/intersection (protos/cols relation) columns))
-    (rows [this]
-      (reify protos/AbstractSet
-        (max-cardinality [_]
-          (protos/max-cardinality (protos/rows relation)))
-        (min-cardinality [_]
-          (protos/min-cardinality (protos/rows relation)))
-        (contains? [this x]
-          (reduce
-            (fn [nf x']
-              (if (= x' x)
-                (reduced true)
-                nf))
-            false
-            (protos/reducible this)))
-        (reducible [_]
-          (eduction
-            (map
-              (fn [x]
-                (reduce
-                  (fn [agg column]
-                    (assoc agg column (get x column)))
-                  {}
-                  (protos/reducible (protos/cols this)))))
-            (distinct)
-            (protos/reducible (protos/rows relation))))))))
+  (let [cols (sets/intersection (protos/cols relation) columns)
+        rows (protos/rows relation)]
+    (reify protos/AbstractRelation
+      (cols [this] cols)
+      (rows [this]
+        (reify protos/AbstractSet
+          (max-cardinality [_]
+            (protos/max-cardinality rows))
+          (min-cardinality [_]
+            (protos/min-cardinality rows))
+          (contains? [this x]
+            (let [[subset? subset]
+                  (reduce
+                    (fn [[subset? m] k]
+                      (if-some [entry (find x k)]
+                        [subset? (assoc m (key entry) (val entry))]
+                        (reduced [false m])))
+                    [true {}]
+                    (protos/reducible cols))]
+              (and subset?
+                   (reduce
+                     (fn [nf x']
+                       (if (= x' subset)
+                         (reduced true)
+                         nf))
+                     false
+                     (protos/reducible this)))))
+          (reducible [_]
+            (eduction
+              (map
+                (fn [x]
+                  (reduce
+                    (fn [agg column]
+                      (assoc agg column (get x column)))
+                    {}
+                    (protos/reducible cols))))
+              (distinct)
+              (protos/reducible rows))))))))
 
 
 (defn union
@@ -55,7 +65,7 @@
   [rel1 rel2]
   (reify protos/AbstractRelation
     (cols [this]
-      (sets/union (protos/cols rel1) (protos/cols rel2)))
+      (protos/cols rel1))
     (rows [this]
       (sets/union (protos/rows rel1) (protos/rows rel2)))))
 
@@ -64,9 +74,9 @@
   [rel1 rel2]
   (reify protos/AbstractRelation
     (cols [this]
-      (sets/intersection (protos/cols rel1) (protos/cols rel2)))
+      (protos/cols rel1))
     (rows [this]
-      )))
+      (sets/intersection (protos/rows rel1) (protos/rows rel2)))))
 
 (defn difference
   "Given two abstract relations, return a new abstract relation representing their difference."
@@ -104,7 +114,10 @@
                      {}
                      (protos/reducible (protos/cols rel2))))))
           (reducible [_]
-            (eduction (map (fn [[a b]] (merge a b))) (protos/reducible set))))))))
+            (eduction
+              (map (fn [[a b]] (merge a b)))
+              (distinct)
+              (protos/reducible set))))))))
 
 (defn join
   "Given two abstract relations, return a new abstract relation representing their inner join."
