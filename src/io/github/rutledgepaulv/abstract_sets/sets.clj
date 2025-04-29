@@ -1,38 +1,40 @@
 (ns io.github.rutledgepaulv.abstract-sets.sets
+  "Set algebra functions implemented on abstract sets and abstract sorted sets.
+   Implementations leverage cardinality and sortedness to achieve efficient
+   incremental APIs on the returned sets that defer accessing values until
+   necessary."
   (:refer-clojure :exclude [conj disj empty empty?])
-  (:require [io.github.rutledgepaulv.abstract-sets.protocols :as protos])
-  (:import (clojure.lang IReduceInit)
- (java.util List Set)))
+  (:require [io.github.rutledgepaulv.abstract-sets.protocols :as protos]
+            [io.github.rutledgepaulv.abstract-sets.utils :as utils])
+  (:import (clojure.lang PersistentTreeSet Reversible Seqable)))
 
-
-(extend-protocol protos/AbstractSet
-  Set
+(extend-protocol protos/AbstractSortedSet
+  PersistentTreeSet
   (contains? [s x]
-    (.contains s x))
-  (reducible [s]
-    s)
+    (clojure.core/contains? s x))
   (max-cardinality [s]
     (count s))
   (min-cardinality [s]
     (count s))
-  List
-  (contains? [s x]
-    (<= 0 (.indexOf s x)))
-  (reducible [s]
-    (eduction (distinct) s))
-  (max-cardinality [s]
-    (count s))
-  (min-cardinality [s]
-    (min 1 (count s))))
+  (starting [s anchor]
+    (into (clojure.core/empty s) (.seqFrom s anchor true)))
+  (stopping [s anchor]
+    (into (clojure.core/empty s) (take (fn [x] (utils/lte x anchor))) s))
+  (seq* [s]
+    (seq s))
+  (rseq* [s]
+    (rseq s)))
 
-(defn empty
-  "Create an empty abstract set."
-  []
-  (reify protos/AbstractSet
+(def empty-set
+  (reify
+    protos/AbstractSortedSet
     (contains? [_ _] false)
     (max-cardinality [_] 0)
     (min-cardinality [_] 0)
-    (reducible [_] (reify IReduceInit (reduce [this f init] init)))))
+    (seq* [_] (seq ()))
+    (starting [_ _] empty-set)
+    (stopping [_ _] empty-set)
+    (rseq* [_] (rseq ()))))
 
 (defn intersection
   "Given two abstract sets, returns a new abstract set representing the intersection."
@@ -40,7 +42,7 @@
   (let [os (sort-by protos/max-cardinality sets)]
     (reify
 
-      protos/AbstractSet
+      protos/AbstractSortedSet
       (contains? [_ x]
         (reduce (fn [_ s] (if (protos/contains? s x) true (reduced false))) false os))
 
@@ -52,23 +54,30 @@
       (min-cardinality [_]
         0)
 
-      (reducible [_]
-        (if (clojure.core/empty? os)
-          (reify IReduceInit (reduce [this f init] init))
-          (eduction
-            (distinct)
-            (reduce
-              (fn [agg s]
-                (eduction (filter (partial protos/contains? s)) agg))
-              (protos/reducible (first os))
-              (rest os))))))))
+      (starting [this from]
+        (apply intersection (mapv #(protos/starting % from) os)))
+
+      (stopping [this from]
+        (apply intersection (mapv #(protos/stopping % from) os)))
+
+      (seq* [this]
+        (->> [(mapv protos/seq* os) #{}]
+             (iterate (fn [[seqs previous-values]]
+                        ))
+             (mapcat second)))
+
+      (rseq* [this]
+        (->> [(mapv protos/rseq* os) #{}]
+             (iterate (fn [[seqs previous-values]]
+                        ))
+             (mapcat second))))))
 
 (defn difference
   "Given two abstract sets, returns a new abstract set representing the difference."
   [a & more]
   (reify
 
-    protos/AbstractSet
+    protos/AbstractSortedSet
     (contains? [_ x]
       (and (protos/contains? a x)
            (reduce (fn [_ s] (if (protos/contains? s x) (reduced false) true)) true more)))
@@ -82,21 +91,33 @@
         (let [min-a (protos/min-cardinality a)]
           (max 0 (- min-a (reduce + 0 (map protos/max-cardinality more)))))))
 
-    (reducible [_]
-      (eduction
-        (distinct)
-        (reduce
-          (fn [agg s]
-            (eduction (remove (partial protos/contains? s)) agg))
-          (protos/reducible a)
-          more)))))
+    protos/AbstractSortedSet
+    (starting [this anchor]
+      (apply difference (protos/starting a) (map #(protos/starting % anchor) more)))
+
+    (stopping [this anchor]
+      (apply difference (protos/stopping a) (map #(protos/stopping % anchor) more)))
+
+    (seq* [this]
+      (->> [(into [(protos/seq* this)] (map protos/seq*) more) #{}]
+           (iterate (fn [[seqs previous-values]]
+                      ))
+           (mapcat second)))
+
+    (rseq* [this]
+      (->> [(into [(protos/rseq* this)] (map protos/rseq*) more) #{}]
+           (iterate (fn [[seqs previous-values]]
+                      ))
+           (mapcat second)))
+
+    ))
 
 (defn union
   "Given zero or more abstract sets, returns a new abstract set representing the union."
   [& sets]
   (reify
 
-    protos/AbstractSet
+    protos/AbstractSortedSet
     (contains? [_ x]
       (reduce (fn [nf s] (if (protos/contains? s x) (reduced true) nf)) false sets))
 
@@ -106,19 +127,35 @@
     (min-cardinality [_]
       (reduce (fn [max-min s] (max max-min (protos/min-cardinality s))) 0 sets))
 
-    (reducible [_]
-      (eduction cat (distinct) (map protos/reducible sets)))))
+    (starting [this from]
+      (apply union (map #(protos/starting % from) sets)))
+
+    (stopping [this from]
+      (apply union (map #(protos/stopping % from) sets)))
+
+    (seq* [this from]
+      (->> [(mapv protos/seq* sets) #{}]
+           (iterate (fn [[seqs previous-values]]
+                      ))
+           (mapcat second)))
+
+    (rseq* [this from]
+      (->> [(mapv protos/rseq* sets) #{}]
+           (iterate (fn [[seqs previous-values]]
+                      ))
+           (mapcat second)))
+    ))
 
 (defn symmetric-difference
   "Given two abstract sets, return a new set containing only the disjoint elements."
   [a b]
   (reify
 
-    protos/AbstractSet
+    protos/AbstractSortedSet
     (contains? [_ x]
-      (if (protos/contains? a x)
-        (not (protos/contains? b x))
-        (protos/contains? b x)))
+      (case [(protos/contains? a x) (protos/contains? b x)]
+        ([true true] [false false]) false
+        ([true false] [false true]) true))
 
     (max-cardinality [_]
       (+ (protos/max-cardinality a) (protos/max-cardinality b)))
@@ -126,16 +163,25 @@
     (min-cardinality [_]
       0)
 
-    (reducible [_]
-      (eduction cat [(eduction (remove (partial protos/contains? b)) (protos/reducible a))
-                     (eduction (remove (partial protos/contains? a)) (protos/reducible b))]))))
+    protos/AbstractSortedSet
+    (starting [this from]
+      (symmetric-difference (protos/starting a from) (protos/starting b from)))
+
+    (stopping [this from]
+      (symmetric-difference (protos/stopping a from) (protos/stopping b from)))
+
+    (seq* [this]
+      )
+
+    (rseq* [this]
+      )))
 
 
 (defn empty?
   "Is the abstract set empty?"
   [s]
   (and (zero? (protos/min-cardinality s))
-       (reduce (constantly (reduced false)) true (protos/reducible s))))
+       (reduce (constantly (reduced false)) true (protos/seq* s))))
 
 (defn intersects?
   "Do all the sets share at least one element?"
@@ -149,15 +195,14 @@
             (reduced true)
             nf))
         false
-        (protos/reducible head)))))
-
+        (protos/seq* head)))))
 
 (defn cartesian-product
   "Returns two abstract sets, return a new abstract set representing the cartesian product."
   [a b]
   (reify
 
-    protos/AbstractSet
+    protos/AbstractSortedSet
     (contains? [_ x]
       (and (sequential? x)
            (= 2 (count x))
@@ -171,18 +216,17 @@
     (min-cardinality [_]
       (* (protos/min-cardinality a) (protos/min-cardinality b)))
 
-    (reducible [_]
-      (reify IReduceInit
-        (reduce [this f init]
-          (reduce
-            (fn [agg xa]
-              (reduce
-                (fn [agg xb]
-                  (f agg [xa xb]))
-                agg
-                (protos/reducible b)))
-            init
-            (protos/reducible a)))))))
+    (starting [this from]
+      )
+
+    (stopping [this from]
+      )
+
+    (seq* [this]
+      )
+
+    (rseq* [this]
+      )))
 
 (defn subset?
   "Is s1 a subset of s2?"
@@ -198,21 +242,27 @@
   "Conjoins one or more values to an abstract set."
   [s & xs]
   (let [elements (set xs)]
-    (reify protos/AbstractSet
+    (reify protos/AbstractSortedSet
       (contains? [_ x]
         (or (clojure.core/contains? elements x) (protos/contains? s x)))
       (max-cardinality [_]
         (+ (protos/max-cardinality s) (count elements)))
       (min-cardinality [_]
         (protos/min-cardinality s))
-      (reducible [_]
-        (eduction cat (distinct) [elements (protos/reducible s)])))))
+      (starting [this anchor]
+        )
+      (stopping [this anchor]
+        )
+      (seq* [_]
+        )
+      (rseq* [_]
+        ))))
 
 (defn disj
   "Disjoins one or more values from an abstract set."
   [s & xs]
   (let [elements (set xs)]
-    (reify protos/AbstractSet
+    (reify protos/AbstractSortedSet
       (contains? [_ x]
         (and (not (clojure.core/contains? elements x))
              (protos/contains? s x)))
@@ -220,17 +270,24 @@
         (protos/max-cardinality s))
       (min-cardinality [_]
         (min 0 (- (protos/min-cardinality s) (count elements))))
-      (reducible [_]
-        (eduction (remove elements) (protos/reducible s))))))
+      (starting [this anchor]
+        )
+      (stopping [this anchor]
+        )
+      (seq* [_]
+        )
+      (rseq* [_]
+        ))))
 
 (defn cardinality
   "Returns the actual cardinality of the set by counting the elements."
   [s]
   (let [min (protos/min-cardinality s)
         max (protos/max-cardinality s)]
-    (if (= min max) max (reduce (fn [i _] (inc i)) 0 (protos/reducible s)))))
+    (if (= min max) max (reduce (fn [i _] (inc i)) 0 (protos/seq* s)))))
+
 
 (defn realize
   "Creates a concrete set from an abstract set. Primarily for testing."
   [s]
-  (into #{} (protos/reducible s)))
+  (into (sorted-set) (protos/seq* s)))

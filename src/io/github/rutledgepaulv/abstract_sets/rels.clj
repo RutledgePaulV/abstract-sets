@@ -25,7 +25,7 @@
     (reify protos/AbstractRelation
       (cols [this] cols)
       (rows [this]
-        (reify protos/AbstractSet
+        (reify protos/AbstractSortedSet
           (max-cardinality [_]
             (protos/max-cardinality rows))
           (min-cardinality [_]
@@ -124,48 +124,50 @@
   [rel1 rel2]
   (reify protos/AbstractRelation
     (cols [this]
-      (sets/intersection (protos/cols rel1) (protos/cols rel2)))
+      (sets/union (protos/cols rel1) (protos/cols rel2)))
     (rows [this]
       (let [rel1-keys (protos/cols rel1)
             rel2-keys (protos/cols rel2)
             join-keys (sets/intersection rel1-keys rel2-keys)]
-        (reify protos/AbstractSet
-          (max-cardinality [_]
-            (if (sets/empty? join-keys)
-              (* (protos/max-cardinality (protos/rows rel1))
-                 (protos/max-cardinality (protos/rows rel2)))
-              (min (protos/max-cardinality (protos/rows rel1))
-                   (protos/max-cardinality (protos/rows rel2)))))
-          (min-cardinality [_]
-            0)
-          (contains? [this x]
-            (and (reduce (fn [result k] (if (contains? x k) result (reduced false))) true (protos/reducible join-keys))
-                 (protos/contains? rel1 (reduce (fn [m k] (assoc m k (get x k))) {} (protos/reducible rel1-keys)))
-                 (protos/contains? rel2 (reduce (fn [m k] (assoc m k (get x k))) {} (protos/reducible rel2-keys)))))
-          (reducible [_]
-            (reify IReduceInit
-              (reduce [this f init]
-                (let [rows1
-                      (protos/rows rel1)
-                      rows2
-                      (protos/rows rel2)
-                      [bigger smaller]
-                      (if (< (protos/max-cardinality rows1) (protos/max-cardinality rows2)) [rows2 rows1] [rows1 rows2])
-                      join-table
-                      (reduce
-                        (fn [m x]
-                          (let [join-key (reduce (fn [m k] (assoc m k (get x k))) {} (protos/reducible join-keys))]
-                            (assoc m join-key x)))
-                        {}
-                        (protos/reducible smaller))]
-                  (reduce
-                    (fn [agg x]
-                      (let [join-key (reduce (fn [m k] (assoc m k (get x k))) {} (protos/reducible join-keys))]
-                        (if-some [y (get join-table join-key)]
-                          (f agg (merge x y))
-                          agg)))
-                    init
-                    (protos/reducible bigger)))))))))))
+        (if (sets/empty? join-keys)
+          (sets/cartesian-product (protos/rows rel1) (protos/rows rel2))
+          (reify protos/AbstractSet
+            (max-cardinality [_]
+              (if (sets/empty? join-keys)
+                (* (protos/max-cardinality (protos/rows rel1))
+                   (protos/max-cardinality (protos/rows rel2)))
+                (min (protos/max-cardinality (protos/rows rel1))
+                     (protos/max-cardinality (protos/rows rel2)))))
+            (min-cardinality [_]
+              0)
+            (contains? [this x]
+              (and (reduce (fn [result k] (if (contains? x k) result (reduced false))) true (protos/reducible join-keys))
+                   (protos/contains? rel1 (reduce (fn [m k] (assoc m k (get x k))) {} (protos/reducible rel1-keys)))
+                   (protos/contains? rel2 (reduce (fn [m k] (assoc m k (get x k))) {} (protos/reducible rel2-keys)))))
+            (reducible [_]
+              (reify IReduceInit
+                (reduce [this f init]
+                  (let [rows1
+                        (protos/rows rel1)
+                        rows2
+                        (protos/rows rel2)
+                        [bigger smaller]
+                        (if (< (protos/max-cardinality rows1) (protos/max-cardinality rows2)) [rows2 rows1] [rows1 rows2])
+                        join-table
+                        (reduce
+                          (fn [m x]
+                            (let [join-key (reduce (fn [m k] (assoc m k (get x k))) {} (protos/reducible join-keys))]
+                              (assoc m join-key x)))
+                          {}
+                          (protos/reducible smaller))]
+                    (reduce
+                      (fn [agg x]
+                        (let [join-key (reduce (fn [m k] (assoc m k (get x k))) {} (protos/reducible join-keys))]
+                          (if-some [y (get join-table join-key)]
+                            (f agg (merge x y))
+                            agg)))
+                      init
+                      (protos/reducible bigger))))))))))))
 
 
 (defn realize
