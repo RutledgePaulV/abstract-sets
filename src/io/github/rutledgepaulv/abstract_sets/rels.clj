@@ -1,8 +1,8 @@
 (ns io.github.rutledgepaulv.abstract-sets.rels
+  (:refer-clojure :exclude [conj disj empty])
   (:require [io.github.rutledgepaulv.abstract-sets.protocols :as protos]
             [io.github.rutledgepaulv.abstract-sets.sets :as sets])
-  (:refer-clojure :exclude [conj disj empty])
-  (:import (clojure.lang IPersistentMap IReduceInit)))
+  (:import (clojure.lang IPersistentMap)))
 
 (extend-protocol protos/AbstractRelation
   IPersistentMap
@@ -38,7 +38,7 @@
                         [subset? (assoc m (key entry) (val entry))]
                         (reduced [false m])))
                     [true {}]
-                    (protos/reducible cols))]
+                    (protos/seq* cols))]
               (and subset?
                    (reduce
                      (fn [nf x']
@@ -46,7 +46,7 @@
                          (reduced true)
                          nf))
                      false
-                     (protos/reducible this)))))
+                     (protos/seq* this)))))
           (reducible [_]
             (eduction
               (map
@@ -55,9 +55,9 @@
                     (fn [agg column]
                       (assoc agg column (get x column)))
                     {}
-                    (protos/reducible cols))))
+                    (protos/seq* cols))))
               (distinct)
-              (protos/reducible rows))))))))
+              (protos/seq* rows))))))))
 
 
 (defn union
@@ -95,7 +95,7 @@
       (sets/union (protos/cols rel1) (protos/cols rel2)))
     (rows [this]
       (let [set (sets/cartesian-product (protos/rows rel1) (protos/rows rel2))]
-        (reify protos/AbstractSet
+        (reify protos/AbstractSortedSet
           (max-cardinality [_]
             (protos/max-cardinality set))
           (min-cardinality [_]
@@ -106,18 +106,18 @@
                    (reduce
                      (fn [m k] (assoc m k (get x k)))
                      {}
-                     (protos/reducible (protos/cols rel1))))
+                     (protos/seq* (protos/cols rel1))))
                  (protos/contains?
                    (protos/rows rel2)
                    (reduce
                      (fn [m k] (assoc m k (get x k)))
                      {}
-                     (protos/reducible (protos/cols rel2))))))
-          (reducible [_]
+                     (protos/seq* (protos/cols rel2))))))
+          (seq* [_]
             (eduction
               (map (fn [[a b]] (merge a b)))
               (distinct)
-              (protos/reducible set))))))))
+              (protos/seq* set))))))))
 
 (defn join
   "Given two abstract relations, return a new abstract relation representing their inner join."
@@ -131,7 +131,7 @@
             join-keys (sets/intersection rel1-keys rel2-keys)]
         (if (sets/empty? join-keys)
           (sets/cartesian-product (protos/rows rel1) (protos/rows rel2))
-          (reify protos/AbstractSet
+          (reify protos/AbstractSortedSet
             (max-cardinality [_]
               (if (sets/empty? join-keys)
                 (* (protos/max-cardinality (protos/rows rel1))
@@ -141,40 +141,36 @@
             (min-cardinality [_]
               0)
             (contains? [this x]
-              (and (reduce (fn [result k] (if (contains? x k) result (reduced false))) true (protos/reducible join-keys))
-                   (protos/contains? rel1 (reduce (fn [m k] (assoc m k (get x k))) {} (protos/reducible rel1-keys)))
-                   (protos/contains? rel2 (reduce (fn [m k] (assoc m k (get x k))) {} (protos/reducible rel2-keys)))))
-            (reducible [_]
-              (reify IReduceInit
-                (reduce [this f init]
-                  (let [rows1
-                        (protos/rows rel1)
-                        rows2
-                        (protos/rows rel2)
-                        [bigger smaller]
-                        (if (< (protos/max-cardinality rows1) (protos/max-cardinality rows2)) [rows2 rows1] [rows1 rows2])
-                        join-table
-                        (reduce
-                          (fn [m x]
-                            (let [join-key (reduce (fn [m k] (assoc m k (get x k))) {} (protos/reducible join-keys))]
-                              (assoc m join-key x)))
-                          {}
-                          (protos/reducible smaller))]
+              (and (reduce (fn [result k] (if (contains? x k) result (reduced false))) true (protos/seq* join-keys))
+                   (protos/contains? rel1 (reduce (fn [m k] (assoc m k (get x k))) {} (protos/seq* rel1-keys)))
+                   (protos/contains? rel2 (reduce (fn [m k] (assoc m k (get x k))) {} (protos/seq* rel2-keys)))))
+            (seq* [_]
+              (let [rows1
+                    (protos/rows rel1)
+                    rows2
+                    (protos/rows rel2)
+                    [bigger smaller]
+                    (if (< (protos/max-cardinality rows1) (protos/max-cardinality rows2)) [rows2 rows1] [rows1 rows2])
+                    join-table
                     (reduce
-                      (fn [agg x]
-                        (let [join-key (reduce (fn [m k] (assoc m k (get x k))) {} (protos/reducible join-keys))]
-                          (if-some [y (get join-table join-key)]
-                            (f agg (merge x y))
-                            agg)))
-                      init
-                      (protos/reducible bigger))))))))))))
+                      (fn [m x]
+                        (let [join-key (reduce (fn [m k] (assoc m k (get x k))) {} (protos/seq* join-keys))]
+                          (assoc m join-key x)))
+                      {}
+                      (protos/seq* smaller))]
+                (keep
+                  (fn [x]
+                    (let [join-key (reduce (fn [m k] (assoc m k (get x k))) {} (protos/seq* join-keys))]
+                      (when-some [y (get join-table join-key)]
+                        (merge x y))))
+                  (protos/seq* bigger))))))))))
 
 
 (defn realize
   "Creates a concrete relation from an abstract relation. Primarily for testing."
   [rel]
-  {:cols (into #{} (protos/reducible (protos/cols rel)))
-   :rows (into #{} (protos/reducible (protos/rows rel)))})
+  {:cols (into #{} (protos/seq* (protos/cols rel)))
+   :rows (into #{} (protos/seq* (protos/rows rel)))})
 
 (comment
 

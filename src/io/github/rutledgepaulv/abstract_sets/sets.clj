@@ -6,7 +6,7 @@
   (:refer-clojure :exclude [conj disj empty empty?])
   (:require [io.github.rutledgepaulv.abstract-sets.protocols :as protos]
             [io.github.rutledgepaulv.abstract-sets.utils :as utils])
-  (:import (clojure.lang PersistentTreeSet Reversible Seqable)))
+  (:import (clojure.lang PersistentTreeSet)))
 
 (extend-protocol protos/AbstractSortedSet
   PersistentTreeSet
@@ -19,7 +19,7 @@
   (starting [s anchor]
     (into (clojure.core/empty s) (.seqFrom s anchor true)))
   (stopping [s anchor]
-    (into (clojure.core/empty s) (take (fn [x] (utils/lte x anchor))) s))
+    (into (clojure.core/empty s) (take-while (fn [x] (utils/lte x anchor))) s))
   (seq* [s]
     (seq s))
   (rseq* [s]
@@ -32,14 +32,14 @@
     (max-cardinality [_] 0)
     (min-cardinality [_] 0)
     (seq* [_] (seq ()))
-    (starting [_ _] empty-set)
-    (stopping [_ _] empty-set)
+    (starting [this _] this)
+    (stopping [this _] this)
     (rseq* [_] (rseq ()))))
 
 (defn intersection
   "Given two abstract sets, returns a new abstract set representing the intersection."
   [& sets]
-  (let [os (sort-by protos/max-cardinality sets)]
+  (let [os sets]
     (reify
 
       protos/AbstractSortedSet
@@ -54,23 +54,40 @@
       (min-cardinality [_]
         0)
 
-      (starting [this from]
-        (apply intersection (mapv #(protos/starting % from) os)))
+      (starting [this anchor]
+        (apply intersection (map #(protos/starting % anchor) os)))
 
-      (stopping [this from]
-        (apply intersection (mapv #(protos/stopping % from) os)))
+      (stopping [this anchor]
+        (apply intersection (map #(protos/stopping % anchor) os)))
 
       (seq* [this]
         (->> [(mapv protos/seq* os) #{}]
-             (iterate (fn [[seqs previous-values]]
-                        ))
-             (mapcat second)))
+             (iterate (fn [[seqs]]
+                        (let [lowest (utils/least (map first seqs))]
+                          (loop [[head-seq & remaining-seqs :as sequences] seqs output-seqs [] unanimous true]
+                            (cond
+                              (clojure.core/empty? sequences)
+                              [output-seqs (if unanimous #{lowest} #{})]
+                              (= lowest (first head-seq))
+                              (recur remaining-seqs (clojure.core/conj output-seqs (rest head-seq)) (and unanimous true))
+                              :else
+                              (recur remaining-seqs (clojure.core/conj output-seqs head-seq) false))))))
+             (utils/taking-until-any-empty)))
 
       (rseq* [this]
         (->> [(mapv protos/rseq* os) #{}]
-             (iterate (fn [[seqs previous-values]]
-                        ))
-             (mapcat second))))))
+             (iterate (fn [[seqs]]
+                        (let [highest (utils/greatest (map first seqs))]
+                          (loop [[head-seq & remaining-seqs :as sequences] seqs output-seqs [] unanimous true]
+                            (cond
+                              (clojure.core/empty? sequences)
+                              [output-seqs (if unanimous #{highest} #{})]
+                              (= highest (first head-seq))
+                              (recur remaining-seqs (clojure.core/conj output-seqs (rest head-seq)) (and unanimous true))
+                              :else
+                              (recur remaining-seqs (clojure.core/conj output-seqs head-seq) false))))))
+             (utils/taking-until-any-empty))))))
+
 
 (defn difference
   "Given two abstract sets, returns a new abstract set representing the difference."
@@ -93,24 +110,46 @@
 
     protos/AbstractSortedSet
     (starting [this anchor]
-      (apply difference (protos/starting a) (map #(protos/starting % anchor) more)))
+      (apply difference (protos/starting a anchor) (map #(protos/starting % anchor) more)))
 
     (stopping [this anchor]
-      (apply difference (protos/stopping a) (map #(protos/stopping % anchor) more)))
+      (apply difference (protos/stopping a anchor) (map #(protos/stopping % anchor) more)))
 
     (seq* [this]
-      (->> [(into [(protos/seq* this)] (map protos/seq*) more) #{}]
-           (iterate (fn [[seqs previous-values]]
-                      ))
-           (mapcat second)))
+      (->> [(into [(protos/seq* a)] (map protos/seq*) more) ()]
+           (iterate (fn [[[add & subtractions]]]
+                      (if-some [v (first add)]
+                        (let [scrolled (into []
+                                             (comp (remove clojure.core/empty?)
+                                                   (map (fn [s] (utils/scroll-until-max s v))))
+                                             subtractions)]
+                          (cond
+                            (clojure.core/empty? scrolled)
+                            [[] add]
+                            (= (utils/least (map first scrolled)) v)
+                            [(into [(rest add)] scrolled) ()]
+                            :else
+                            [(into [(rest add)] scrolled) (list v)]))
+                        [() ()])))
+           (utils/taking-until-first-empty)))
 
     (rseq* [this]
-      (->> [(into [(protos/rseq* this)] (map protos/rseq*) more) #{}]
-           (iterate (fn [[seqs previous-values]]
-                      ))
-           (mapcat second)))
-
-    ))
+      (->> [(into [(protos/rseq* a)] (map protos/rseq*) more) #{}]
+           (iterate (fn [[[add & subtractions]]]
+                      (if-some [v (first add)]
+                        (let [scrolled (into []
+                                             (comp (remove clojure.core/empty?)
+                                                   (map (fn [s] (utils/scroll-until-min s v))))
+                                             subtractions)]
+                          (cond
+                            (clojure.core/empty? scrolled)
+                            [[] add]
+                            (= (utils/greatest (map first scrolled)) v)
+                            [(into [(rest add)] scrolled) ()]
+                            :else
+                            [(into [(rest add)] scrolled) (list v)]))
+                        [() ()])))
+           (utils/taking-until-first-empty)))))
 
 (defn union
   "Given zero or more abstract sets, returns a new abstract set representing the union."
@@ -127,75 +166,66 @@
     (min-cardinality [_]
       (reduce (fn [max-min s] (max max-min (protos/min-cardinality s))) 0 sets))
 
-    (starting [this from]
-      (apply union (map #(protos/starting % from) sets)))
+    (starting [this anchor]
+      (apply union (map #(protos/starting % anchor) sets)))
 
-    (stopping [this from]
-      (apply union (map #(protos/stopping % from) sets)))
+    (stopping [this anchor]
+      (apply union (map #(protos/stopping % anchor) sets)))
 
-    (seq* [this from]
-      (->> [(mapv protos/seq* sets) #{}]
-           (iterate (fn [[seqs previous-values]]
-                      ))
-           (mapcat second)))
+    (seq* [this]
+      (->> [(map protos/seq* sets) ()]
+           (iterate (fn [[seqs :as input]]
+                      (let [lowest (utils/least (map first seqs))]
+                        (loop [[head-seq & remaining-seqs :as sequences] seqs output-seqs []]
+                          (cond
+                            (clojure.core/empty? sequences)
+                            [output-seqs (list lowest)]
+                            (nil? (first head-seq))
+                            (recur remaining-seqs output-seqs)
+                            (= lowest (first head-seq))
+                            (recur remaining-seqs
+                                   (cond-> output-seqs
+                                     (seq (rest head-seq))
+                                     (clojure.core/conj (rest head-seq))))
+                            :else
+                            (recur remaining-seqs (clojure.core/conj output-seqs head-seq)))))))
+           (utils/taking-until-all-empty)))
 
-    (rseq* [this from]
-      (->> [(mapv protos/rseq* sets) #{}]
-           (iterate (fn [[seqs previous-values]]
-                      ))
-           (mapcat second)))
-    ))
+    (rseq* [this]
+      (->> [(map protos/rseq* sets) #{}]
+           (iterate (fn [[seqs]]
+                      (let [highest (utils/greatest (map first seqs))]
+                        (loop [[head-seq & remaining-seqs :as sequences] seqs output-seqs []]
+                          (cond
+                            (clojure.core/empty? sequences)
+                            [output-seqs (list highest)]
+                            (nil? (first head-seq))
+                            (recur remaining-seqs output-seqs)
+                            (= highest (first head-seq))
+                            (recur remaining-seqs
+                                   (cond-> output-seqs
+                                     (seq (rest head-seq))
+                                     (clojure.core/conj (rest head-seq))))
+                            :else
+                            (recur remaining-seqs (clojure.core/conj output-seqs head-seq)))))))
+           (utils/taking-until-all-empty)))))
 
 (defn symmetric-difference
   "Given two abstract sets, return a new set containing only the disjoint elements."
   [a b]
-  (reify
-
-    protos/AbstractSortedSet
-    (contains? [_ x]
-      (case [(protos/contains? a x) (protos/contains? b x)]
-        ([true true] [false false]) false
-        ([true false] [false true]) true))
-
-    (max-cardinality [_]
-      (+ (protos/max-cardinality a) (protos/max-cardinality b)))
-
-    (min-cardinality [_]
-      0)
-
-    protos/AbstractSortedSet
-    (starting [this from]
-      (symmetric-difference (protos/starting a from) (protos/starting b from)))
-
-    (stopping [this from]
-      (symmetric-difference (protos/stopping a from) (protos/stopping b from)))
-
-    (seq* [this]
-      )
-
-    (rseq* [this]
-      )))
-
+  (difference (union a b) (intersection a b)))
 
 (defn empty?
   "Is the abstract set empty?"
   [s]
-  (and (zero? (protos/min-cardinality s))
-       (reduce (constantly (reduced false)) true (protos/seq* s))))
+  (or (= 0 (protos/max-cardinality s))
+      (and (zero? (protos/min-cardinality s))
+           (empty? (protos/seq* s)))))
 
 (defn intersects?
   "Do all the sets share at least one element?"
   [& sets]
-  (if (clojure.core/empty? sets)
-    false
-    (let [[head & rest] (sort-by protos/max-cardinality sets)]
-      (reduce
-        (fn [nf x]
-          (if (reduce (fn [_ s] (if (protos/contains? s x) true (reduced false))) nf rest)
-            (reduced true)
-            nf))
-        false
-        (protos/seq* head)))))
+  (some? (clojure.core/seq (protos/seq* (apply intersection sets)))))
 
 (defn cartesian-product
   "Returns two abstract sets, return a new abstract set representing the cartesian product."
@@ -216,17 +246,21 @@
     (min-cardinality [_]
       (* (protos/min-cardinality a) (protos/min-cardinality b)))
 
-    (starting [this from]
-      )
+    (starting [this [start-a start-b]]
+      (throw (ex-info "Not implemented yet." {})))
 
-    (stopping [this from]
-      )
+    (stopping [this [stop-a stop-b]]
+      (throw (ex-info "Not implemented yet." {})))
 
     (seq* [this]
-      )
+      (for [a (protos/seq* a)
+            b (protos/seq* b)]
+        [a b]))
 
     (rseq* [this]
-      )))
+      (for [a (protos/rseq* a)
+            b (protos/rseq* b)]
+        [a b]))))
 
 (defn subset?
   "Is s1 a subset of s2?"
@@ -241,43 +275,12 @@
 (defn conj
   "Conjoins one or more values to an abstract set."
   [s & xs]
-  (let [elements (set xs)]
-    (reify protos/AbstractSortedSet
-      (contains? [_ x]
-        (or (clojure.core/contains? elements x) (protos/contains? s x)))
-      (max-cardinality [_]
-        (+ (protos/max-cardinality s) (count elements)))
-      (min-cardinality [_]
-        (protos/min-cardinality s))
-      (starting [this anchor]
-        )
-      (stopping [this anchor]
-        )
-      (seq* [_]
-        )
-      (rseq* [_]
-        ))))
+  (union s (into (sorted-set) xs)))
 
 (defn disj
   "Disjoins one or more values from an abstract set."
   [s & xs]
-  (let [elements (set xs)]
-    (reify protos/AbstractSortedSet
-      (contains? [_ x]
-        (and (not (clojure.core/contains? elements x))
-             (protos/contains? s x)))
-      (max-cardinality [_]
-        (protos/max-cardinality s))
-      (min-cardinality [_]
-        (min 0 (- (protos/min-cardinality s) (count elements))))
-      (starting [this anchor]
-        )
-      (stopping [this anchor]
-        )
-      (seq* [_]
-        )
-      (rseq* [_]
-        ))))
+  (difference s (into (sorted-set) xs)))
 
 (defn cardinality
   "Returns the actual cardinality of the set by counting the elements."
@@ -285,7 +288,6 @@
   (let [min (protos/min-cardinality s)
         max (protos/max-cardinality s)]
     (if (= min max) max (reduce (fn [i _] (inc i)) 0 (protos/seq* s)))))
-
 
 (defn realize
   "Creates a concrete set from an abstract set. Primarily for testing."

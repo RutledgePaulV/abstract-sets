@@ -1,5 +1,5 @@
 (ns io.github.rutledgepaulv.abstract-sets.protocols
-  (:refer-clojure :exclude [contains?]))
+  (:refer-clojure :exclude [contains? compare]))
 
 (defprotocol AbstractSortedSet
   (max-cardinality [s]
