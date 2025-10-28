@@ -16,10 +16,17 @@
     (count s))
   (min-cardinality [s]
     (count s))
-  (starting [s anchor]
-    (into (clojure.core/empty s) (.seqFrom s anchor true)))
-  (stopping [s anchor]
-    (into (clojure.core/empty s) (take-while (fn [x] (utils/lte x anchor))) s))
+  (starting [s anchor exclusive]
+    (into (clojure.core/empty s)
+          (cond->> (.seqFrom s anchor true)
+                   exclusive
+                   (drop-while #(= % anchor)))))
+  (stopping [s anchor exclusive]
+    (into (clojure.core/empty s)
+          (if exclusive
+            (take-while (fn [x] (utils/lt x anchor)))
+            (take-while (fn [x] (utils/lte x anchor))))
+          s))
   (seq* [s]
     (seq s))
   (rseq* [s]
@@ -32,8 +39,8 @@
     (max-cardinality [_] 0)
     (min-cardinality [_] 0)
     (seq* [_] (seq ()))
-    (starting [this _] this)
-    (stopping [this _] this)
+    (starting [this _ _] this)
+    (stopping [this _ _] this)
     (rseq* [_] (rseq ()))))
 
 (defn intersection
@@ -54,11 +61,11 @@
       (min-cardinality [_]
         0)
 
-      (starting [this anchor]
-        (apply intersection (map #(protos/starting % anchor) os)))
+      (starting [this anchor exclusive]
+        (apply intersection (map #(protos/starting % anchor exclusive) os)))
 
-      (stopping [this anchor]
-        (apply intersection (map #(protos/stopping % anchor) os)))
+      (stopping [this anchor exclusive]
+        (apply intersection (map #(protos/stopping % anchor exclusive) os)))
 
       (seq* [this]
         (->> [(mapv protos/seq* os) #{}]
@@ -109,11 +116,11 @@
           (max 0 (- min-a (reduce + 0 (map protos/max-cardinality more)))))))
 
     protos/AbstractSortedSet
-    (starting [this anchor]
-      (apply difference (protos/starting a anchor) (map #(protos/starting % anchor) more)))
+    (starting [this anchor exclusive]
+      (apply difference (protos/starting a anchor exclusive) (map #(protos/starting % anchor exclusive) more)))
 
-    (stopping [this anchor]
-      (apply difference (protos/stopping a anchor) (map #(protos/stopping % anchor) more)))
+    (stopping [this anchor exclusive]
+      (apply difference (protos/stopping a anchor exclusive) (map #(protos/stopping % anchor exclusive) more)))
 
     (seq* [this]
       (->> [(into [(protos/seq* a)] (map protos/seq*) more) ()]
@@ -166,11 +173,11 @@
     (min-cardinality [_]
       (reduce (fn [max-min s] (max max-min (protos/min-cardinality s))) 0 sets))
 
-    (starting [this anchor]
-      (apply union (map #(protos/starting % anchor) sets)))
+    (starting [this anchor exclusive]
+      (apply union (map #(protos/starting % anchor exclusive) sets)))
 
-    (stopping [this anchor]
-      (apply union (map #(protos/stopping % anchor) sets)))
+    (stopping [this anchor exclusive]
+      (apply union (map #(protos/stopping % anchor exclusive) sets)))
 
     (seq* [this]
       (->> [(map protos/seq* sets) ()]
@@ -220,7 +227,7 @@
   [s]
   (or (= 0 (protos/max-cardinality s))
       (and (zero? (protos/min-cardinality s))
-           (empty? (protos/seq* s)))))
+           (clojure.core/empty? (protos/seq* s)))))
 
 (defn intersects?
   "Do all the sets share at least one element?"
@@ -246,10 +253,10 @@
     (min-cardinality [_]
       (* (protos/min-cardinality a) (protos/min-cardinality b)))
 
-    (starting [this [start-a start-b]]
+    (starting [this [start-a start-b] exclusive]
       (throw (ex-info "Not implemented yet." {})))
 
-    (stopping [this [stop-a stop-b]]
+    (stopping [this [stop-a stop-b] exclusive]
       (throw (ex-info "Not implemented yet." {})))
 
     (seq* [this]
