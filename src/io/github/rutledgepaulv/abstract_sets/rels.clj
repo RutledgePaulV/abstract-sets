@@ -1,197 +1,149 @@
 (ns io.github.rutledgepaulv.abstract-sets.rels
+  (:refer-clojure :exclude [conj disj empty])
   (:require [io.github.rutledgepaulv.abstract-sets.protocols :as protos]
             [io.github.rutledgepaulv.abstract-sets.sets :as sets])
-  (:refer-clojure :exclude [conj disj empty])
-  (:import (clojure.lang IPersistentMap IReduceInit)))
+  (:import (clojure.lang IPersistentMap)))
 
 (extend-protocol protos/AbstractRelation
   IPersistentMap
   (cols [this] (:cols this))
   (rows [this] (:rows this)))
 
+(defn sorted-relation
+  [cols rows]
+  (let [columns     (into (sorted-set) cols)
+        extractor   (apply juxt columns)
+        sorter      (fn [a b] (compare (extractor a) (extractor b)))
+        sorted-rows (into (sorted-set-by sorter) rows)]
+    (reify protos/AbstractRelation
+      (cols [_] columns)
+      (rows [_] sorted-rows))))
+
 (defn relation
   "Create an abstract relation from abstract column and row sets."
-  ([] (relation #{} #{}))
-  ([cols rows]
-   (reify protos/AbstractRelation
-     (cols [_] cols)
-     (rows [_] rows))))
-
-(defn project
-  "Given a relation and an abstract set of columns, return a new relation containing only those columns which intersected."
-  [relation columns]
-  (let [cols (sets/intersection (protos/cols relation) columns)
-        rows (protos/rows relation)]
-    (reify protos/AbstractRelation
-      (cols [this] cols)
-      (rows [this]
-        (reify protos/AbstractSet
-          (max-cardinality [_]
-            (protos/max-cardinality rows))
-          (min-cardinality [_]
-            (protos/min-cardinality rows))
-          (contains? [this x]
-            (let [[subset? subset]
-                  (reduce
-                    (fn [[subset? m] k]
-                      (if-some [entry (find x k)]
-                        [subset? (assoc m (key entry) (val entry))]
-                        (reduced [false m])))
-                    [true {}]
-                    (protos/reducible cols))]
-              (and subset?
-                   (reduce
-                     (fn [nf x']
-                       (if (= x' subset)
-                         (reduced true)
-                         nf))
-                     false
-                     (protos/reducible this)))))
-          (reducible [_]
-            (eduction
-              (map
-                (fn [x]
-                  (reduce
-                    (fn [agg column]
-                      (assoc agg column (get x column)))
-                    {}
-                    (protos/reducible cols))))
-              (distinct)
-              (protos/reducible rows))))))))
-
-
-(defn union
-  "Given two abstract relations, return a new abstract relation representing their union."
-  [rel1 rel2]
+  [cols rows]
   (reify protos/AbstractRelation
-    (cols [this]
-      (protos/cols rel1))
-    (rows [this]
-      (sets/union (protos/rows rel1) (protos/rows rel2)))))
+    (cols [_] cols)
+    (rows [_] rows)))
 
-(defn intersection
-  "Given two abstract relations, return a new abstract relation representing their intersection."
-  [rel1 rel2]
+(def empty-relation
   (reify protos/AbstractRelation
-    (cols [this]
-      (protos/cols rel1))
-    (rows [this]
-      (sets/intersection (protos/rows rel1) (protos/rows rel2)))))
-
-(defn difference
-  "Given two abstract relations, return a new abstract relation representing their difference."
-  [rel1 rel2]
-  (reify protos/AbstractRelation
-    (cols [this]
-      (protos/cols rel1))
-    (rows [this]
-      (sets/difference (protos/rows rel1) (protos/rows rel2)))))
-
-(defn cartesian-product
-  "Given two abstract relations, return a new abstract relation representing their cartesian product."
-  [rel1 rel2]
-  (reify protos/AbstractRelation
-    (cols [this]
-      (sets/union (protos/cols rel1) (protos/cols rel2)))
-    (rows [this]
-      (let [set (sets/cartesian-product (protos/rows rel1) (protos/rows rel2))]
-        (reify protos/AbstractSet
-          (max-cardinality [_]
-            (protos/max-cardinality set))
-          (min-cardinality [_]
-            (protos/min-cardinality set))
-          (contains? [_ x]
-            (and (protos/contains?
-                   (protos/rows rel1)
-                   (reduce
-                     (fn [m k] (assoc m k (get x k)))
-                     {}
-                     (protos/reducible (protos/cols rel1))))
-                 (protos/contains?
-                   (protos/rows rel2)
-                   (reduce
-                     (fn [m k] (assoc m k (get x k)))
-                     {}
-                     (protos/reducible (protos/cols rel2))))))
-          (reducible [_]
-            (eduction
-              (map (fn [[a b]] (merge a b)))
-              (distinct)
-              (protos/reducible set))))))))
+    (cols [_] (sorted-set))
+    (rows [_] (sorted-set))))
 
 (defn join
   "Given two abstract relations, return a new abstract relation representing their inner join."
   [rel1 rel2]
   (reify protos/AbstractRelation
     (cols [this]
-      (sets/intersection (protos/cols rel1) (protos/cols rel2)))
+      (sets/union (protos/cols rel1) (protos/cols rel2)))
     (rows [this]
       (let [rel1-keys (protos/cols rel1)
             rel2-keys (protos/cols rel2)
+            rel1-rows (protos/rows rel1)
+            rel2-rows (protos/rows rel2)
             join-keys (sets/intersection rel1-keys rel2-keys)]
-        (reify protos/AbstractSet
-          (max-cardinality [_]
-            (if (sets/empty? join-keys)
-              (* (protos/max-cardinality (protos/rows rel1))
-                 (protos/max-cardinality (protos/rows rel2)))
+        (if (sets/empty? join-keys)
+          ; cartesian product
+          (reify protos/AbstractSortedSet
+            (max-cardinality [_]
+              (* (protos/max-cardinality rel1-rows)
+                 (protos/max-cardinality rel2-rows)))
+            (min-cardinality [_]
+              (* (protos/min-cardinality rel1-rows)
+                 (protos/min-cardinality rel2-rows)))
+            (contains? [this x]
+              (and (protos/contains? rel1-rows (select-keys x (protos/seq* rel1-keys)))
+                   (protos/contains? rel2-rows (select-keys x (protos/seq* rel2-keys)))))
+            (starting [this x exclusive]
+              )
+            (stopping [this x exclusive]
+              )
+            (seq* [_]
+              )
+            (rseq* [_]
+              ))
+          ; hash join
+          (reify protos/AbstractSortedSet
+            (max-cardinality [_]
               (min (protos/max-cardinality (protos/rows rel1))
-                   (protos/max-cardinality (protos/rows rel2)))))
-          (min-cardinality [_]
-            0)
-          (contains? [this x]
-            (and (reduce (fn [result k] (if (contains? x k) result (reduced false))) true (protos/reducible join-keys))
-                 (protos/contains? rel1 (reduce (fn [m k] (assoc m k (get x k))) {} (protos/reducible rel1-keys)))
-                 (protos/contains? rel2 (reduce (fn [m k] (assoc m k (get x k))) {} (protos/reducible rel2-keys)))))
-          (reducible [_]
-            (reify IReduceInit
-              (reduce [this f init]
-                (let [rows1
-                      (protos/rows rel1)
-                      rows2
-                      (protos/rows rel2)
-                      [bigger smaller]
-                      (if (< (protos/max-cardinality rows1) (protos/max-cardinality rows2)) [rows2 rows1] [rows1 rows2])
-                      join-table
-                      (reduce
-                        (fn [m x]
-                          (let [join-key (reduce (fn [m k] (assoc m k (get x k))) {} (protos/reducible join-keys))]
-                            (assoc m join-key x)))
-                        {}
-                        (protos/reducible smaller))]
-                  (reduce
-                    (fn [agg x]
-                      (let [join-key (reduce (fn [m k] (assoc m k (get x k))) {} (protos/reducible join-keys))]
-                        (if-some [y (get join-table join-key)]
-                          (f agg (merge x y))
-                          agg)))
-                    init
-                    (protos/reducible bigger)))))))))))
+                   (protos/max-cardinality (protos/rows rel2))))
+            (min-cardinality [_]
+              0)
+            (contains? [this x]
+              (and (reduce (fn [result k] (if (contains? x k) result (reduced false))) true (protos/seq* join-keys))
+                   (protos/contains? rel1 (reduce (fn [m k] (assoc m k (get x k))) {} (protos/seq* rel1-keys)))
+                   (protos/contains? rel2 (reduce (fn [m k] (assoc m k (get x k))) {} (protos/seq* rel2-keys)))))
+            (starting [this x exclusive]
+              (protos/rows
+                (join (relation
+                        (protos/cols rel1)
+                        (protos/starting (protos/rows rel1) x exclusive))
+                      (relation
+                        (protos/cols rel2)
+                        (protos/starting (protos/rows rel2) x exclusive)))))
+            (stopping [this x exclusive]
+              (protos/rows
+                (join (relation
+                        (protos/cols rel1)
+                        (protos/stopping (protos/rows rel1) x exclusive))
+                      (relation
+                        (protos/cols rel2)
+                        (protos/stopping (protos/rows rel2) x exclusive)))))
+            (seq* [_]
+              (let [[bigger smaller]
+                    (if (< (protos/max-cardinality rel1-rows) (protos/max-cardinality rel2-rows)) [rel2-rows rel1-rows] [rel1-rows rel2-rows])
+                    join-table
+                    (reduce
+                      (fn [m x]
+                        (let [join-key (reduce (fn [m k] (assoc m k (get x k))) {} (protos/seq* join-keys))]
+                          (assoc m join-key x)))
+                      {}
+                      (protos/seq* smaller))]
+                (keep
+                  (fn [x]
+                    (let [join-key (reduce (fn [m k] (assoc m k (get x k))) {} (protos/seq* join-keys))]
+                      (when-some [y (get join-table join-key)]
+                        (merge x y))))
+                  (protos/seq* bigger))))
+            (rseq* [_]
+              (let [rows1
+                    (protos/rows rel1)
+                    rows2
+                    (protos/rows rel2)
+                    [bigger smaller]
+                    (if (< (protos/max-cardinality rows1) (protos/max-cardinality rows2)) [rows2 rows1] [rows1 rows2])
+                    join-table
+                    (reduce
+                      (fn [m x]
+                        (let [join-key (reduce (fn [m k] (assoc m k (get x k))) {} (protos/seq* join-keys))]
+                          (assoc m join-key x)))
+                      {}
+                      (protos/seq* smaller))]
+                (keep
+                  (fn [x]
+                    (let [join-key (reduce (fn [m k] (assoc m k (get x k))) {} (protos/seq* join-keys))]
+                      (when-some [y (get join-table join-key)]
+                        (merge x y))))
+                  (protos/rseq* bigger))))))))))
 
 
 (defn realize
   "Creates a concrete relation from an abstract relation. Primarily for testing."
   [rel]
-  {:cols (into #{} (protos/reducible (protos/cols rel)))
-   :rows (into #{} (protos/reducible (protos/rows rel)))})
+  {:cols (into #{} (protos/seq* (protos/cols rel)))
+   :rows (into #{} (protos/seq* (protos/rows rel)))})
 
 (comment
 
-  (def rel1 (relation #{:a :b :c} #{{:a 1 :b 2 :c 3} {:a 1 :b 3 :c 4}}))
-  (def rel2 (relation #{:a :b :d} #{{:a 1 :b 2 :d 4} {:a 1 :b 3 :d 6}}))
+  (def rel1 (sorted-relation #{:a :b :c} #{{:a 1 :b 2 :c 3} {:a 1 :b 3 :c 4}}))
+  (def rel2 (sorted-relation #{:a :b :d} #{{:a 1 :b 2 :d 4} {:a 1 :b 3 :d 6}}))
   (def joined (join rel1 rel2))
 
   (realize
-    (cartesian-product
-      (relation #{:a :b} #{{:a 1 :b 2} {:a 2 :b 3}})
-      (relation #{:c :d} #{{:c 1 :d 2} {:c 2 :d 3}})
+    (join
+      (sorted-relation #{:a :b} #{{:a 1 :b 2} {:a 2 :b 3}})
+      (sorted-relation #{:c :d} #{{:c 1 :d 2} {:c 2 :d 3}})
       ))
-
-  (protos/contains?
-    (protos/rows
-      (cartesian-product
-        (relation #{:a :b} #{{:a 1 :b 2} {:a 2 :b 3}})
-        (relation #{:c :d} #{{:c 1 :d 2} {:c 2 :d 3}})))
-    {:a 2, :b 3, :c 2, :d 3}
-    )
 
   )
