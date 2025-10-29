@@ -104,6 +104,9 @@
             (cols [_] rel2-keys)
             (rows [_] (protos/stopping rel2-rows x exclusive)))))
       (seq* [_]
+        ; TODO, when join-keys is a prefix of both relation sort orders
+        ; then we can do an iterative join instead of a hash-join and save
+        ; on memory usage
         (let [[bigger smaller]
               (if (< (protos/max-cardinality rel1-rows) (protos/max-cardinality rel2-rows)) [rel2-rows rel1-rows] [rel1-rows rel2-rows])
               join-table
@@ -163,9 +166,16 @@
 
 (comment
 
+  ; hash join
   (realize
     (join
       (sorted-relation #{:a :b :c} #{{:a 1 :b 2 :c 3} {:a 1 :b 3 :c 4}})
       (sorted-relation #{:a :b :d} #{{:a 1 :b 2 :d 4} {:a 1 :b 3 :d 6}})))
+
+  ; cartesian product
+  (realize
+    (join
+      (sorted-relation #{:a :b :c} #{{:a 1 :b 2 :c 3} {:a 2 :b 3 :c 4}})
+      (sorted-relation #{:d :e :f} #{{:d 1 :e 2 :f 3} {:d 2 :e 3 :f 4}})))
 
   )
